@@ -1,0 +1,115 @@
+name: Build Personal Vault APK
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-apk:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: 'platforms;android-35 build-tools;35.0.0 platform-tools'
+
+      - name: Check source ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s personal-vault-v1.0.0-source-fixed.zip
+
+      - name: Extract source ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          rm -rf .ci-project
+          mkdir -p .ci-project
+
+          unzip -q personal-vault-v1.0.0-source-fixed.zip -d .ci-project
+
+          test -d .ci-project/personal-vault
+          test -f .ci-project/personal-vault/package.json
+          test -f .ci-project/personal-vault/apps/android/app/build.gradle
+          test -f .ci-project/personal-vault/packages/ui/src/tokens.css
+
+      - name: Install npm dependencies
+        working-directory: .ci-project/personal-vault
+        run: npm install --no-audit --no-fund
+
+      - name: Build web app
+        working-directory: .ci-project/personal-vault
+        run: npm run build:web
+
+      - name: Copy web build into Android assets
+        working-directory: .ci-project/personal-vault
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          rm -rf apps/android/app/src/main/assets/assets
+          mkdir -p apps/android/app/src/main/assets/assets
+
+          cp -R apps/web-shell/dist/. \
+            apps/android/app/src/main/assets/assets/
+
+          test -f apps/android/app/src/main/assets/assets/index.html
+
+      - name: Verify no localhost or loopback URLs
+        working-directory: .ci-project/personal-vault
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if grep -RniE 'localhost|127\.0\.0\.1|http://|file://' apps/android/app/src/main/assets
+          then
+            echo "ERROR: prohibited local/network URL found in Android assets."
+            exit 1
+          fi
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
+
+      - name: Build debug APK
+        run: |
+          gradle \
+            -p .ci-project/personal-vault/apps/android \
+            --no-daemon \
+            --stacktrace \
+            :app:assembleDebug
+
+      - name: Verify APK
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          APK=".ci-project/personal-vault/apps/android/app/build/outputs/apk/debug/app-debug.apk"
+
+          test -s "$APK"
+
+          unzip -l "$APK" | grep -q 'assets/assets/index.html'
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: personal-vault-debug-apk
+          path: .ci-project/personal-vault/apps/android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 14
